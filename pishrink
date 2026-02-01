@@ -1,67 +1,57 @@
-#!/bin/bash
+#!/bin/zsh
 
-usage() { echo "Usage: $0 imagefile.img [newimagefile.img]"; exit -1; }
+usage() { echo "Usage: $0 imagefile.img [newimagefile.img]"; exit 1; }
+
+cleanup() {
+  [[ -n "$loopback" ]] && hdiutil detach "$loopback" >/dev/null 2>&1
+}
+trap cleanup EXIT
 
 #Args
 img="$1"
 
 #Usage checks
-if [[ -z "$img" ]]; then
-  usage
-fi
-if [[ ! -f "$img" ]]; then
-  echo "ERROR: $img is not a file..."
-  exit -2
-fi
+[ -z "$img" ] && usage
+[ ! -f "$img" ] && { echo "ERROR: $img is not a file..."; exit 2; }
 
 #Check that what we need is installed
 for command in tune2fs e2fsck resize2fs; do
-  which $command 2>&1 >/dev/null
-  if (( $? != 0 )); then
-    echo "ERROR: $command is not installed."
-    exit -4
-  fi
+  command -v $command 2>&1 >/dev/null
+  [ $? -ne 0 ] && { echo "ERROR: $command is not installed."; exit 4; }
 done
 
 #Copy to new file if requested
 if [ -n "$2" ]; then
   echo "Copying $1 to $2..."
   cp "$1" "$2"
-  if (( $? != 0 )); then
-    echo "ERROR: Could not copy file..."
-    exit -5
-  fi
+  [ $? -ne 0 ] && { echo "ERROR: Could not copy file..."; exit 5; }
   img="$2"
 fi
 
 #Gather info
-beforesize=$(ls -lh "$img" | tr -s " " | cut -d " " -f 5)
-partnum=$(fdisk "$img" | grep Linux | cut -d ":" -f1 | tr -d " ")
-partstart=$(fdisk -d "$img" | grep 0x83 | cut -d "," -f1)
-loopback=$(hdiutil attach -nomount "$img" | grep Linux | cut -d " " -f1)
+beforesize=$(ls -lh "$img" | awk '{print $5}')
+partnum=$(fdisk "$img" | tr -d ":" |  awk '$2=="83" {print $1}')
+partstart=$(fdisk -d "$img" |  awk -F "," '/0x83/ {print $1}')
+loopback=$(hdiutil attach -nomount "$img" | awk '/Linux/ {print $1}')
 tune2fs_output=$(tune2fs -l "$loopback")
-currentsize=$(echo "$tune2fs_output" | grep '^Block count:' | tr -d ' ' | cut -d ':' -f 2)
-blocksize=$(echo "$tune2fs_output" | grep '^Block size:' | tr -d ' ' | cut -d ':' -f 2)
+currentsize=$(echo "$tune2fs_output" | awk  '/Block count:/ {print $NF}')
+blocksize=$(echo "$tune2fs_output" |  awk  '/Block size:/ {print $NF}')
 
 #Make sure filesystem is ok, force yes on all questions
+echo "Checking filesystem on partition $partnum ..."
 e2fsck -y -f "$loopback"
-minsize=$(resize2fs -P "$loopback" | cut -d ':' -f 2 | tr -d ' ')
+minsize=$(resize2fs -P "$loopback" | awk -F ': ' '{print $2}')
 
 # add 200 MB of extra space, the system may need it to run, minsize is in blocks unit
 minsize=$(($minsize + 200 * 1048576 / $blocksize))
 
-if [[ $minsize -gt $currentsize ]]; then
-echo "ERROR: Image already shrunk to smallest size"
-exit -6
-fi
+[ $minsize -gt $currentsize ] && { echo "ERROR: Image already shrunk to smallest size"; exit 3; }
 
 #Shrink filesystem
+echo
+echo "Shrinking partition $partnum starting at block $partstart on $img..."
 resize2fs -p "$loopback" $minsize
-if [[ $? != 0 ]]; then
-  echo "ERROR: resize2fs failed..."
-  hdiutil detach $loopback
-  exit -7
-fi
+[ $? -ne 0 ] && { echo "ERROR: resize2fs failed..."; exit 7; }
 sleep 1
 
 #Shrink partition
@@ -71,7 +61,9 @@ partnewsize=$(($minsize * $blocksize / 512))
 newpartend=$(($partstart + $partnewsize))
 
 # now use fdisk to change the partition
-fdisk -e "$img" <<EOF2
+echo
+echo "Updating partition table to new size ..."
+fdisk -e "$img" 2>/dev/null <<EOF2
 e $partnum
 
 
@@ -86,6 +78,7 @@ sleep 1
 #Truncate the file
 endresult=$(($newpartend * 512))
 truncate -s $endresult "$img"
-aftersize=$(ls -lh "$img" | tr -s " " | cut -d " " -f 5)
-
+aftersize=$(ls -lh "$img" | awk '{print $5}')
+echo
+echo
 echo "Shrunk $img from $beforesize to $aftersize"
