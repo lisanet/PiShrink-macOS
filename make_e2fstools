@@ -35,7 +35,7 @@ mkdir "$PACKAGES"
 mkdir "$TARGET"
 mkdir "$CMPL"
 
-download https://netix.dl.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.46.5/e2fsprogs-1.46.5.tar.gz
+download https://netix.dl.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.47.2/e2fsprogs-1.47.2.tar.gz
 cd e2fs*
 ./configure --prefix "$TARGET" --disable-nls
 make
